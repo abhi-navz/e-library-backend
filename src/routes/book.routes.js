@@ -5,6 +5,7 @@ const { requireAuth, requireRole } = require('../middleware/auth.middleware');
 const router = express.Router();
 
 router.get('/', bookController.getBooks);
+router.get('/:id/summary', requireAuth, bookController.getBookSummary);
 router.get('/:id', bookController.getBookById);
 router.post('/', requireAuth, requireRole('admin'), bookController.createBook);
 router.patch('/:id', requireAuth, requireRole('admin'), bookController.updateBook);

@@ -20,6 +20,10 @@ const bookSchema = new mongoose.Schema(
     content: {
       type: String
     },
+    aiSummary: {
+      type: String,
+      default: null
+    },
     isbn: {
       type: String,
       trim: true,
