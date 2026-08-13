@@ -31,6 +31,51 @@ const createToken = (userId) => {
   return jwt.sign({ userId }, process.env.JWT_SECRET, { expiresIn: '7d' });
 };
 
+const bootstrapAdmin = async (req, res, next) => {
+  try {
+    const configuredEmail = normalizeEmail(process.env.ADMIN_BOOTSTRAP_EMAIL);
+    const configuredPassword = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+
+    if (!configuredEmail || !configuredPassword) {
+      const error = new Error('Admin bootstrap is not configured.');
+      error.statusCode = 503;
+      throw error;
+    }
+    if (!isValidEmail(configuredEmail) || typeof configuredPassword !== 'string' || configuredPassword.length < 8 || configuredPassword.length > 128) {
+      const error = new Error('Admin bootstrap configuration is invalid.');
+      error.statusCode = 503;
+      throw error;
+    }
+
+    const existingAdmin = await User.exists({ role: 'admin' });
+    if (existingAdmin) {
+      const error = new Error('An administrator already exists.');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    // Credentials are server-controlled; request body values are intentionally ignored.
+    const admin = await User.create({
+      name: 'Administrator',
+      email: configuredEmail,
+      password: configuredPassword,
+      role: 'admin'
+    });
+
+    return res.status(201).json({ message: 'Administrator bootstrapped successfully.', user: safeUser(admin) });
+  } catch (error) {
+    if (error.name === 'ValidationError') {
+      error.statusCode = 503;
+      error.message = 'Admin bootstrap configuration is invalid.';
+    }
+    if (error.code === 11000) {
+      error.message = 'An administrator already exists.';
+      error.statusCode = 409;
+    }
+    return next(error);
+  }
+};
+
 const register = async (req, res, next) => {
   try {
     const { name, email, password } = req.body;
@@ -117,4 +162,4 @@ const logout = (req, res) => {
 
 const getCurrentUser = (req, res) => res.status(200).json({ user: safeUser(req.user) });
 
-module.exports = { register, login, logout, getCurrentUser };
+module.exports = { register, login, logout, getCurrentUser, bootstrapAdmin };
