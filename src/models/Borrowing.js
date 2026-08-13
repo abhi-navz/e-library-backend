@@ -42,6 +42,7 @@ borrowingSchema.index(
 );
 borrowingSchema.index({ user: 1, borrowedAt: -1 });
 borrowingSchema.index({ book: 1, status: 1 });
+borrowingSchema.index({ status: 1, dueDate: 1 });
 
 borrowingSchema.set('toJSON', {
   transform: (document, returnedObject) => {

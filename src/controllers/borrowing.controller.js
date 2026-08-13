@@ -150,7 +150,21 @@ const getMyBorrowings = async (req, res, next) => {
       throw createError('Borrowing history is only available for the authenticated user.', 400);
     }
 
-    const borrowings = await Borrowing.find({ user: req.user._id })
+    const allowedStatuses = ['borrowed', 'returned', 'overdue'];
+    const requestedStatus = req.query.status;
+    if (requestedStatus !== undefined && (typeof requestedStatus !== 'string' || !allowedStatuses.includes(requestedStatus))) {
+      throw createError('status must be one of: borrowed, returned, overdue.', 400);
+    }
+
+    const filter = { user: req.user._id };
+    if (requestedStatus === 'borrowed' || requestedStatus === 'returned') {
+      filter.status = requestedStatus;
+    } else if (requestedStatus === 'overdue') {
+      filter.status = 'borrowed';
+      filter.dueDate = { $lt: new Date() };
+    }
+
+    const borrowings = await Borrowing.find(filter)
       .populate('book', BOOK_POPULATION)
       .sort({ borrowedAt: -1 });
 
