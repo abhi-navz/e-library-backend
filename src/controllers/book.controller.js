@@ -16,6 +16,62 @@ const createError = (message, statusCode) => {
 
 const isValidBookId = (id) => /^[a-fA-F0-9]{24}$/.test(id) && mongoose.isValidObjectId(id);
 
+const allowedSortFields = new Set(['title', 'author', 'publishedYear', 'createdAt']);
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const parsePositiveInteger = (value, field, maximum) => {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
+    throw createError(`${field} must be a positive integer.`, 400);
+  }
+
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || (maximum && number > maximum)) {
+    throw createError(maximum ? `${field} must be a positive integer no greater than ${maximum}.` : `${field} must be a positive integer.`, 400);
+  }
+  return number;
+};
+
+const parseBookListQuery = (queryParameters) => {
+  const page = queryParameters.page === undefined ? 1 : parsePositiveInteger(queryParameters.page, 'page');
+  const limit = queryParameters.limit === undefined ? 10 : parsePositiveInteger(queryParameters.limit, 'limit', 50);
+  const sort = queryParameters.sort === undefined ? 'createdAt' : queryParameters.sort;
+  const order = queryParameters.order === undefined ? 'desc' : queryParameters.order;
+
+  if (typeof sort !== 'string' || !allowedSortFields.has(sort)) {
+    throw createError('sort must be one of: title, author, publishedYear, createdAt.', 400);
+  }
+  if (order !== 'asc' && order !== 'desc') {
+    throw createError('order must be either asc or desc.', 400);
+  }
+
+  const filter = {};
+  if (queryParameters.search !== undefined) {
+    if (typeof queryParameters.search !== 'string') {
+      throw createError('search must be a string.', 400);
+    }
+    const searchPattern = new RegExp(escapeRegex(queryParameters.search), 'i');
+    filter.$or = [{ title: searchPattern }, { author: searchPattern }];
+  }
+  if (queryParameters.category !== undefined) {
+    if (typeof queryParameters.category !== 'string') {
+      throw createError('category must be a string.', 400);
+    }
+    filter.category = new RegExp(`^${escapeRegex(queryParameters.category)}$`, 'i');
+  }
+  if (queryParameters.available !== undefined) {
+    if (queryParameters.available === 'true') {
+      filter.availableCopies = { $gt: 0 };
+    } else if (queryParameters.available === 'false') {
+      filter.availableCopies = 0;
+    } else {
+      throw createError('available must be either true or false.', 400);
+    }
+  }
+
+  return { filter, page, limit, sort: { [sort]: order === 'asc' ? 1 : -1 } };
+};
+
 const validateRequestFieldTypes = (body, fields) => {
   const stringFields = ['title', 'author', 'description', 'content', 'isbn', 'category', 'coverImage'];
   const numberFields = ['publishedYear', 'totalCopies', 'availableCopies'];
@@ -75,10 +131,26 @@ const createBook = async (req, res, next) => {
 
 const getBooks = async (req, res, next) => {
   try {
-    const books = await Book.find();
-    return res.status(200).json({ books });
+    const { filter, page, limit, sort } = parseBookListQuery(req.query);
+    const skip = (page - 1) * limit;
+    const [books, totalBooks] = await Promise.all([
+      Book.find(filter).sort(sort).skip(skip).limit(limit),
+      Book.countDocuments(filter)
+    ]);
+    const totalPages = Math.ceil(totalBooks / limit);
+    return res.status(200).json({
+      books,
+      pagination: {
+        page,
+        limit,
+        totalBooks,
+        totalPages,
+        hasNextPage: page < totalPages,
+        hasPreviousPage: page > 1
+      }
+    });
   } catch (error) {
-    return next(error);
+    return handleBookError(error, next);
   }
 };
 
