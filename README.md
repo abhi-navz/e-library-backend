@@ -1,0 +1,162 @@
+# E-Library Management System Backend
+
+An Express/MongoDB backend for managing an electronic library: user accounts, books, inventory, borrowing and returns, administrator operations, overdue monitoring, and cached AI-generated book summaries.
+
+## Problem being solved
+
+The service provides a secure API for cataloging books, controlling copy availability, recording user borrowing history, managing users, and making concise book summaries available without repeatedly calling the AI provider.
+
+## Key features
+
+- Cookie-based JWT authentication and `user`/`admin` authorization
+- Secure initial administrator bootstrap
+- Admin user creation, listing, lookup, activation, and role management
+- Book CRUD with inventory invariants
+- Search, category/availability filtering, pagination, and sorting
+- Transactional borrowing and returning with duplicate-loan protection
+- Dynamic overdue filtering and an admin overdue queue
+- UserFacet AI book summaries with MongoDB caching and source-change invalidation
+- Consistent JSON error responses
+
+## Tech stack
+
+- Node.js and Express 4
+- MongoDB with Mongoose 9
+- bcrypt for password hashing
+- JSON Web Tokens and `cookie-parser`
+- UserFacet AI API via Node’s built-in `fetch`
+- Node’s built-in `node:test` runner
+
+## Architecture
+
+```text
+HTTP request
+   |
+Express app -> route middleware -> controller -> Mongoose model
+                                      |              |
+                                      +-> AI service  +-> MongoDB
+```
+
+Routes are thin. Controllers validate requests and apply business rules. Models define persistence, validation, timestamps, and indexes. The AI provider is isolated in `src/services/ai.service.js`.
+
+## Project structure
+
+```text
+src/
+  app.js                         Express application and route mounting
+  server.js                      dotenv loading, MongoDB connection, HTTP server
+  config/db.js                   MongoDB connection
+  controllers/                   Request/business logic
+  middleware/                    Authentication and error middleware
+  models/                        User, Book, Borrowing schemas
+  routes/                        Endpoint definitions
+  services/ai.service.js         UserFacet AI integration
+docs/API_DOCUMENTATION.md        Detailed endpoint reference
+```
+
+## API overview
+
+| Area | Endpoints |
+|---|---|
+| Health | `GET /api/health` |
+| Authentication | `/api/auth/*` |
+| Books | `/api/books/*` |
+| Borrowing | `/api/borrowings/*` |
+| Admin users | `/api/admin/users/*` |
+| Admin overdue | `/api/admin/borrowings/overdue` |
+
+
+## Setup
+
+Requirements: Node.js, MongoDB/Atlas, and (for summaries) a UserFacet AI token.
+
+```bash
+npm install
+copy .env.example .env       # Windows
+# cp .env.example .env       # macOS/Linux
+npm run dev
+```
+
+The default server port is `3000`. The production-style start command is:
+
+```bash
+npm start
+```
+
+The server connects to MongoDB before listening. It does not start if the connection fails.
+
+## Environment variables
+
+Use local secret values; never commit them.
+
+```env
+PORT=3000
+MONGO_URI=mongodb://127.0.0.1:27017/e-library
+JWT_SECRET=replace_with_a_long_random_secret
+ADMIN_BOOTSTRAP_EMAIL=admin@example.com
+ADMIN_BOOTSTRAP_PASSWORD=replace_with_a_strong_password
+AI_API_TOKEN=your_userfacet_ai_token
+AI_API_BASE_URL=https://ai-api.userfacet.com
+```
+
+`AI_API_BASE_URL` defaults to the UserFacet URL in code if omitted. Bootstrap credentials are used only by the one-time bootstrap endpoint.
+
+## Authentication and authorization
+
+Successful login signs a JWT containing the user ID and stores it in an HTTP-only `token` cookie. The cookie is `secure` in production, uses `sameSite: lax`, and lasts seven days. `requireAuth` verifies the cookie, JWT secret, user existence, and `isActive`. `requireRole('admin')` then checks the authenticated user’s role.
+
+The bootstrap endpoint creates the first admin from server environment variables and returns `409` while an administrator already exists.
+
+Public registration always creates a normal user, even if a client includes a role field. The bootstrap endpoint creates the first admin from server environment variables and becomes unavailable with `409` once any admin exists.
+
+## Books
+
+Books contain title, author, required description, optional content and metadata, `totalCopies`, `availableCopies`, and a cached `aiSummary`. Book creation derives `availableCopies` from `totalCopies`; clients cannot set it directly. Updates preserve currently unavailable copies when total inventory changes. Availability is validated so it cannot be negative or exceed total copies.
+
+Admin-only CRUD is available alongside public catalog reads. List queries support title/author search, case-insensitive category matching, availability filtering, pagination (maximum limit 50), and sorting by title, author, published year, or creation time.
+
+## Borrowing and returning
+
+Authenticated users borrow with only a book ID. A 14-day due date is generated by the server. Borrow and return inventory changes use MongoDB transactions and conditional atomic updates. A partial unique index prevents multiple active borrowings for the same user/book while allowing re-borrowing after return.
+
+`GET /api/borrowings/my` can dynamically filter `borrowed`, `returned`, or `overdue`. Overdue means `status: "borrowed"` and `dueDate` earlier than the current time; it is never stored as a database status. Admins can view a paginated overdue queue sorted by oldest due date first.
+
+## AI book summaries
+
+Authenticated users can request `GET /api/books/:id/summary`. The backend uses stored title, author, and preferably content (otherwise description), sends a controlled prompt to UserFacet’s `/v1/chat/completions`, validates the response, and stores only the resulting text in `Book.aiSummary`.
+
+Cached summaries are returned without another provider call. Changing title, author, description, or content through the admin book PATCH clears the cache; inventory and unrelated metadata changes do not. Source material sent to the provider is capped at 12,000 characters.
+
+## Admin functionality
+
+Admins can create/list/read/update users, including roles and activation state. Password changes are not part of the admin PATCH endpoint. The service prevents demoting or deactivating the last active administrator.
+
+## Testing
+
+Run the repository’s automated tests with:
+
+```bash
+npm test
+```
+
+This invokes `node --test`. The current committed test file is `src/controllers/book.controller.test.js`; it covers book creation inventory derivation, protected inventory updates, validation, search/filtering, pagination, and sorting through controller-level tests. Atlas/provider integration checks used during development are temporary and are not part of the repository test suite.
+
+## Security considerations
+
+- Passwords are bcrypt-hashed by the User model and excluded from normal serialization.
+- JWTs are stored in HTTP-only cookies; protected routes reuse `requireAuth`.
+- Admin routes reuse `requireRole('admin')`.
+- Server-controlled values such as user identity, borrowing timestamps, due dates, statuses, inventory, and AI prompts cannot be arbitrarily supplied by clients.
+- Provider tokens and database credentials belong only in local environment configuration.
+- Error responses expose a message, not stack traces or authorization headers.
+
+## Important design decisions
+
+- Transactions plus conditional `$inc` operations protect inventory under concurrent borrow/return requests.
+- A partial unique MongoDB index enforces one active user/book borrowing without blocking future borrowing after return.
+- Overdue is derived at query time so it never becomes stale persisted state.
+- AI summaries are persistent MongoDB cache entries rather than process memory.
+
+## Future improvements
+
+Potential next steps include dedicated automated integration tests, password reset/change flows, richer admin reporting, notification/fine policies, rate limiting, request validation middleware, and observability. These are not currently implemented.
